@@ -1,2 +1,2 @@
 # sturdy-potato
-sturdy-potato is a personal whatsapp bot
+sturdy-potato is a personal telegram bot called watson
