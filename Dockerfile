@@ -2,7 +2,7 @@
 FROM node:18-slim
 
 # Set the working directory in the container
-WORKDIR /usr/src/app
+WORKDIR /src
 
 # Copy package.json and package-lock.json to the working directory
 COPY package*.json ./
@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 3000
 
 # Define the command to run the app
-CMD [ "node", "src/index.js" ]
+CMD [ "node", "src/bot.js" ]
