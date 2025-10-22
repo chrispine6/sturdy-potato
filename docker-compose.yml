@@ -9,8 +9,8 @@ services:
     environment:
       - ARANGO_URL=http://arangodb:8529
       - ARANGO_USERNAME=root
-      - ARANGO_PASSWORD=mattdamon
-      - ARANGO_DB_NAME=${ARANGO_ROOT_PASSWORD}
+      - ARANGO_PASSWORD=${ARANGO_ROOT_PASSWORD}
+      - ARANGO_DB_NAME=watson_stark
     depends_on:
       - arangodb
     networks:

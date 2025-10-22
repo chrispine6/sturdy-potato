@@ -2,42 +2,61 @@ const { Database } = require('arangojs');
 
 let db = null;
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function connectToArangoDB() {
   if (db) {
     return db;
   }
 
+  const url = process.env.ARANGO_URL || 'http://arangodb:8529';
+  const username = process.env.ARANGO_USERNAME || 'root';
+  const password = process.env.ARANGO_PASSWORD || '';
+  const dbName = process.env.ARANGO_DB_NAME || 'watson-stark';
+
   try {
-    // Create initial connection to _system database
-    const systemDb = new Database({
-      url: process.env.ARANGO_URL || 'http://localhost:8529',
-      auth: {
-        username: process.env.ARANGO_USERNAME || 'root',
-        password: process.env.ARANGO_PASSWORD || ''
-      }
-    });
+    // Retry loop for transient DNS / connection errors
+    const maxAttempts = 10;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // Create initial connection to _system database
+        const systemDb = new Database({
+          url,
+          auth: { username, password }
+        });
 
-    // Check if our database exists
-    const dbName = process.env.ARANGO_DB_NAME || 'watson-stark';
-    const databases = await systemDb.listDatabases();
-    
-    if (!databases.includes(dbName)) {
-      await systemDb.createDatabase(dbName);
-      console.log(`✓ Database "${dbName}" created`);
+        // Try a lightweight call to ensure the server is reachable
+        const databases = await systemDb.listDatabases();
+
+        // If we got databases, proceed
+        if (!databases.includes(dbName)) {
+          await systemDb.createDatabase(dbName);
+          console.log(`✓ Database "${dbName}" created`);
+        }
+
+        // Connect to our database
+        db = new Database({
+          url,
+          databaseName: dbName,
+          auth: { username, password }
+        });
+
+        console.log(`✓ Connected to database "${dbName}" at ${url}`);
+        return db;
+      } catch (err) {
+        // On last attempt throw, otherwise wait and retry
+        const isLast = attempt === maxAttempts;
+        console.error(`Attempt ${attempt}/${maxAttempts} - error connecting to ArangoDB: ${err.message}`);
+        if (isLast) throw err;
+
+        // Exponential backoff with jitter
+        const backoff = Math.min(1000 * 2 ** (attempt - 1), 30000);
+        const jitter = Math.floor(Math.random() * 300);
+        await sleep(backoff + jitter);
+      }
     }
-
-    // Connect to our database
-    db = new Database({
-      url: process.env.ARANGO_URL || 'http://localhost:8529',
-      databaseName: dbName,
-      auth: {
-        username: process.env.ARANGO_USERNAME || 'root',
-        password: process.env.ARANGO_PASSWORD || ''
-      }
-    });
-
-    console.log(`✓ Connected to database "${dbName}"`);
-    return db;
   } catch (error) {
     console.error('✗ Error connecting to ArangoDB:', error.message);
     throw error;
