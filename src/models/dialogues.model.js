@@ -1,6 +1,11 @@
 const { getDatabase, ensureCollection } = require('../db/connector');
+const OpenAI = require('openai');
 
 const COLLECTION_NAME = 'dialogues';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 class DialoguesModel {
   constructor() {
@@ -11,13 +16,30 @@ class DialoguesModel {
     this.collection = await ensureCollection(COLLECTION_NAME);
   }
 
+  async generateEmbedding(text) {
+    try {
+      const response = await openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: text,
+      });
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error('Error generating embedding:', error);
+      throw error;
+    }
+  }
+
   async saveDialogue(userId, userName, userMessage, botResponse) {
     try {
+      // Generate embedding for the user message
+      const embedding = await this.generateEmbedding(userMessage);
+      
       const dialogue = {
         userId,
         userName,
         userMessage,
         botResponse,
+        embedding,
         timestamp: new Date().toISOString()
       };
       
@@ -44,6 +66,33 @@ class DialoguesModel {
       return await cursor.all();
     } catch (error) {
       console.error('Error getting user dialogues:', error);
+      throw error;
+    }
+  }
+
+  async searchSimilarDialogues(userId, queryText, limit = 5) {
+    try {
+      const db = getDatabase();
+      const queryEmbedding = await this.generateEmbedding(queryText);
+      
+      // Using cosine similarity for vector search
+      const query = `
+        FOR dialogue IN ${COLLECTION_NAME}
+        FILTER dialogue.userId == @userId
+        LET similarity = COSINE_SIMILARITY(dialogue.embedding, @queryEmbedding)
+        SORT similarity DESC
+        LIMIT @limit
+        RETURN MERGE(dialogue, { similarity })
+      `;
+      
+      const cursor = await db.query(query, { 
+        userId, 
+        queryEmbedding,
+        limit 
+      });
+      return await cursor.all();
+    } catch (error) {
+      console.error('Error searching similar dialogues:', error);
       throw error;
     }
   }
