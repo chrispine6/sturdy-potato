@@ -1,4 +1,3 @@
-const OpenAI = require('openai');
 const dialoguesModel = require('../models/dialogues.model');
 const remindersModel = require('../models/reminders.model');
 const todosModel = require('../models/todos.model');
@@ -125,14 +124,65 @@ const functions = {
       },
       required: ["category", "topic", "content"]
     }
+  },
+  web_search: {
+    name: "web_search",
+    description: "Search the web for information. Use this when the user asks for current news, facts, or external data.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The search query"
+        }
+      },
+      required: ["query"]
+    }
   }
 };
-const functionDeclarations = Object.values(functions);
+const toolDeclarations = Object.values(functions).map(func => ({ type: 'function', function: func }));
 
-// Initialize OpenAI client
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Use fetch to call the XAI API endpoint. Node 18+ has global fetch; fallback to node-fetch if needed.
+let fetchImpl = globalThis.fetch;
+if (!fetchImpl) {
+	// eslint-disable-next-line global-require
+	fetchImpl = require('node-fetch');
+}
 
-// Execute function calls
+// XAI HTTP adapter helper
+async function callXaiAPI(payload) {
+	const url = process.env.XAI_API_URL
+	if (!url) throw new Error('XAI_API_URL environment variable is not set.');
+
+	const apiKey = process.env.XAI_API_KEY || '';
+	const res = await fetchImpl(url, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Authorization': apiKey ? `Bearer ${apiKey}` : ''
+		},
+		body: JSON.stringify(payload),
+	});
+
+	let data;
+	try {
+		data = await res.json();
+	} catch (e) {
+		const text = await res.text();
+		console.error('XAI API returned non-JSON response:', text);
+		throw new Error(`XAI API returned non-JSON response: ${text}`);
+	}
+
+	if (!res.ok) {
+		const err = data && data.error ? data.error : `XAI API error: ${res.status}`;
+		console.error('XAI API error details:', data);
+		throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+	}
+	console.log('XAI API response:', JSON.stringify(data, null, 2));
+	return data;
+}
+
+// Execute tool calls
 async function executeTool(functionName, functionArgs, userId, userName) {
   try {
     switch (functionName) {
@@ -242,6 +292,15 @@ async function executeTool(functionName, functionArgs, userId, userName) {
           category: functionArgs.category
         };
       
+      case "web_search":
+        // Placeholder implementation: simulate web search (replace with actual API call if available)
+        const searchResults = `Simulated search results for "${functionArgs.query}": [No real results integrated yet. Use XAI SDK for full functionality.]`;
+        return { 
+          success: true, 
+          message: searchResults,
+          query: functionArgs.query
+        };
+      
       default:
         return { success: false, error: "Unknown function" };
     }
@@ -266,7 +325,7 @@ async function getConversationContext(userId, limit = 5) {
   return messages;
 }
 
-// Main AI processing function using OpenAI + function-calling
+// Main AI processing function using XAI + tool-calling
 async function processMessage(userId, userName, userMessage) {
   try {
     const systemInstruction = `You are Watson-Stark, a helpful and friendly personal assistant bot. You help users manage their daily life with todos, reminders, and a personal knowledge base.
@@ -291,10 +350,8 @@ When handling requests:
 - Always confirm actions with clear feedback
 
 If you're unsure about the user's intent, ask a clarifying question rather than guessing.
-Responses should be to the point and no unnecessary emojis, or new lines are required.
-If responses include things from our knowledge base, cite it with time.
-
-The user's name is ${userName}.`;
+Responses should be to the point and no unnecessary emojis, markdown format or new lines are required.
+If responses include things from our knowledge base, cite it with time.`;
 
     // Build initial message list: system + history + user
     const history = await getConversationContext(userId, 5);
@@ -305,57 +362,48 @@ The user's name is ${userName}.`;
     ];
 
     let finalResponse = '';
-    // Loop to handle any function_call sequences
+    // Loop to handle any tool_call sequences
     for (let loop = 0; loop < 5; loop++) {
-      const completion = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini', // change via env if desired
+      const xaiPayload = {
+        model: process.env.XAI_MODEL || 'grok-4',
         messages,
-        functions: functionDeclarations,
-        function_call: 'auto',
+        tools: toolDeclarations,
+        tool_choice: 'auto',
         max_tokens: 800
-      });
+      };
+      const completion = await callXaiAPI(xaiPayload);
 
       const choice = completion.choices && completion.choices[0];
       if (!choice || !choice.message) {
-        throw new Error('No response from OpenAI.');
+        throw new Error('No response from XAI.');
       }
 
       const msg = choice.message;
 
-      // If model requested a tool/function
-      if (msg.function_call && msg.function_call.name) {
-        // Parse function args (they are typically a JSON string)
-        let parsedArgs = {};
-        try {
-          parsedArgs = msg.function_call.arguments
-            ? JSON.parse(msg.function_call.arguments)
-            : {};
-        } catch (e) {
-          parsedArgs = {};
+      // If model requested a tool
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        // Execute each tool call
+        for (const toolCall of msg.tool_calls) {
+          const parsedArgs = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
+          const toolResult = await executeTool(toolCall.function.name, parsedArgs, userId, userName);
+
+          // Append the tool call and result to messages
+          messages.push({
+            role: 'assistant',
+            content: `Tool call: ${toolCall.function.name}\nArguments: ${JSON.stringify(parsedArgs)}`
+          });
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(toolResult)
+          });
         }
-
-        // Execute the tool
-        const toolResult = await executeTool(msg.function_call.name, parsedArgs, userId, userName);
-
-        // Append the assistant function_call message (as returned by model) and the function result
-        // OpenAI rejects messages with content: null, so provide a textual representation
-        const parsedArgsText = Object.keys(parsedArgs).length ? JSON.stringify(parsedArgs) : '';
-        messages.push({
-          role: 'assistant',
-          content: `Function call: ${msg.function_call.name}${parsedArgsText ? `\nArguments: ${parsedArgsText}` : ''}`
-        });
-        messages.push({
-          role: 'function',
-          name: msg.function_call.name,
-          content: JSON.stringify(toolResult)
-        });
-
-        // Continue loop to let model incorporate function result and produce final answer
+        // Continue loop to let model incorporate tool results
         continue;
       }
 
-      // No function call -> normal assistant response
-      finalResponse = msg.content || (msg.message && msg.message.content) || '';
+      // No tool calls -> normal assistant response
+      finalResponse = msg.content || '';
       break;
     }
 
@@ -367,7 +415,7 @@ The user's name is ${userName}.`;
 
     return finalResponse;
   } catch (error) {
-    console.error('Error processing message with OpenAI:', error);
+    console.error('Error processing message with XAI:', error);
 
     if (error.message && error.message.toLowerCase().includes('api key')) {
       throw new Error('Invalid OpenAI API key. Please check your OPENAI_API_KEY in .env file.');

@@ -1,11 +1,6 @@
 const { getDatabase, ensureCollection } = require('../db/connector');
-const OpenAI = require('openai');
 
 const COLLECTION_NAME = 'dialogues';
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
 
 class DialoguesModel {
   constructor() {
@@ -16,30 +11,13 @@ class DialoguesModel {
     this.collection = await ensureCollection(COLLECTION_NAME);
   }
 
-  async generateEmbedding(text) {
-    try {
-      const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: text,
-      });
-      return response.data[0].embedding;
-    } catch (error) {
-      console.error('Error generating embedding:', error);
-      throw error;
-    }
-  }
-
   async saveDialogue(userId, userName, userMessage, botResponse) {
     try {
-      // Generate embedding for the user message
-      const embedding = await this.generateEmbedding(userMessage);
-      
       const dialogue = {
         userId,
         userName,
         userMessage,
         botResponse,
-        embedding,
         timestamp: new Date().toISOString()
       };
       
