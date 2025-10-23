@@ -63,7 +63,7 @@ bot.onText(/\/start/, (msg) => {
   const userName = msg.from.first_name;
   bot.sendMessage(chatId, 
     `Welcome ${userName}! 👋\n\n` +
-    `I'm Watson-Stark, your personal AI assistant powered by Google Gemini. I can help you with:\n\n` +
+    `I'm Watson-Stark, your personal AI assistant powered by xAI. I can help you with:\n\n` +
     `✅ Managing todos and tasks\n` +
     `⏰ Setting reminders\n` +
     `📚 Storing and retrieving information\n` +
@@ -94,7 +94,7 @@ bot.onText(/\/help/, (msg) => {
     '*Quick Commands:*\n' +
     '/stats - View your statistics\n' +
     '/help - Show this help message\n\n' +
-    '_Powered by Google Gemini_ ✨',
+    '_Powered by xAI_ ✨',
     { parse_mode: 'Markdown' }
   );
 });
@@ -123,4 +123,4 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
-console.log('bot is running with OpenAI...');
+console.log('bot is running with XAI...');
