@@ -1,6 +1,6 @@
 version: '3.8'
 services:
-  node-app:
+  watson-stark:
     build:
       context: .
       dockerfile: Dockerfile
