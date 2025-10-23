@@ -41,7 +41,7 @@ bot.on('message', async (msg) => {
     // Show typing indicator
     bot.sendChatAction(chatId, 'typing');
     
-    // Process message with Gemini AI
+    // Process message with AI
     const response = await processMessage(userId, userName, msg.text);
     
     bot.sendMessage(chatId, response);
@@ -50,7 +50,7 @@ bot.on('message', async (msg) => {
     
     let errorMessage = 'Sorry, I encountered an error processing your message. Please try again.';
     
-    if (error.message.includes('API key')) {
+    if (error.message && error.message.toLowerCase().includes('api key')) {
       errorMessage = '⚠️ API configuration error. Please contact the bot administrator.';
     }
     
@@ -123,4 +123,4 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
-console.log('bot is running with Gemini AI...');
+console.log('bot is running with OpenAI...');

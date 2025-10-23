@@ -1,13 +1,10 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
 const dialoguesModel = require('../models/dialogues.model');
 const remindersModel = require('../models/reminders.model');
 const todosModel = require('../models/todos.model');
 const knowledgeBaseModel = require('../models/knowledgeBase.model');
 
-// Initialize Gemini
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// Define function declarations for Gemini
+// Convert functions object to array for OpenAI
 const functions = {
   create_todo: {
     name: "create_todo",
@@ -130,9 +127,10 @@ const functions = {
     }
   }
 };
-
-// Convert functions object to array for Gemini
 const functionDeclarations = Object.values(functions);
+
+// Initialize OpenAI client
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Execute function calls
 async function executeTool(functionName, functionArgs, userId, userName) {
@@ -256,33 +254,22 @@ async function executeTool(functionName, functionArgs, userId, userName) {
   }
 }
 
-// Get conversation history for context
+// Convert dialogue history to OpenAI messages
 async function getConversationContext(userId, limit = 5) {
   const recentDialogues = await dialoguesModel.getUserDialogues(userId, limit);
-  
-  const history = [];
+  const messages = [];
+  // reverse to keep chronological order
   for (const dialogue of recentDialogues.reverse()) {
-    history.push({
-      role: "user",
-      parts: [{ text: dialogue.userMessage }]
-    });
-    history.push({
-      role: "model",
-      parts: [{ text: dialogue.botResponse }]
-    });
+    messages.push({ role: 'user', content: dialogue.userMessage });
+    messages.push({ role: 'assistant', content: dialogue.botResponse });
   }
-  
-  return history;
+  return messages;
 }
 
-// Main AI processing function
+// Main AI processing function using OpenAI + function-calling
 async function processMessage(userId, userName, userMessage) {
   try {
-    // Initialize the model with function calling
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      tools: [{ functionDeclarations }],
-      systemInstruction: `You are Watson-Stark, a helpful and friendly personal assistant bot. You help users manage their daily life with todos, reminders, and a personal knowledge base.
+    const systemInstruction = `You are Watson-Stark, a helpful and friendly personal assistant bot. You help users manage their daily life with todos, reminders, and a personal knowledge base.
 
 Your capabilities:
 - Create and manage todos with priorities (low, medium, high)
@@ -304,97 +291,88 @@ When handling requests:
 - Always confirm actions with clear feedback
 
 If you're unsure about the user's intent, ask a clarifying question rather than guessing.
+Responses should be to the point and no unnecessary emojis, or new lines are required.
+If responses include things from our knowledge base, cite it with time.
 
-The user's name is ${userName}.`
-    });
+The user's name is ${userName}.`;
 
-    // Get conversation history
+    // Build initial message list: system + history + user
     const history = await getConversationContext(userId, 5);
-    
-    // Start a chat session with history
-    const chat = model.startChat({
-      history: history
-    });
+    const messages = [
+      { role: 'system', content: systemInstruction },
+      ...history,
+      { role: 'user', content: userMessage }
+    ];
 
-    // Send the user message
-    let result = await chat.sendMessage(userMessage);
-    let response = result && result.response;
-
-    // Helper to safely extract function calls (some SDKs provide functionCalls as a function)
-    function getFunctionCalls(resp) {
-      if (!resp) return [];
-      try {
-        if (typeof resp.functionCalls === 'function') {
-          const fc = resp.functionCalls();
-          return Array.isArray(fc) ? fc : [];
-        }
-        if (Array.isArray(resp.functionCalls)) return resp.functionCalls;
-      } catch (e) {
-        // ignore and treat as no function calls
-      }
-      return [];
-    }
-    
-    // Handle function calls in a loop (robustly)
-    let functionCalls = getFunctionCalls(response);
-    while (functionCalls.length > 0) {
-      const functionResponses = [];
-
-      for (const call of functionCalls) {
-        // Safely parse args (some SDKs return args as JSON string)
-        let parsedArgs = call && call.args ? call.args : {};
-        if (typeof parsedArgs === 'string') {
-          try {
-            parsedArgs = JSON.parse(parsedArgs);
-          } catch (e) {
-            parsedArgs = {};
-          }
-        }
-
-        console.log(`Executing function: ${call.name}`, parsedArgs);
-        const functionResult = await executeTool(call.name, parsedArgs, userId, userName);
-
-        functionResponses.push({
-          functionResponse: {
-            name: call.name,
-            response: functionResult
-          }
-        });
-      }
-
-      // Send function responses back to the model
-      result = await chat.sendMessage(functionResponses);
-      response = result && result.response;
-      functionCalls = getFunctionCalls(response);
-    }
-
-    // Get the final text response (safe fallback if response or text() is missing)
     let finalResponse = '';
-    if (response) {
-      if (typeof response.text === 'function') {
-        finalResponse = response.text();
-      } else if (typeof response.text === 'string') {
-        finalResponse = response.text;
+    // Loop to handle any function_call sequences
+    for (let loop = 0; loop < 5; loop++) {
+      const completion = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini', // change via env if desired
+        messages,
+        functions: functionDeclarations,
+        function_call: 'auto',
+        max_tokens: 800
+      });
+
+      const choice = completion.choices && completion.choices[0];
+      if (!choice || !choice.message) {
+        throw new Error('No response from OpenAI.');
       }
+
+      const msg = choice.message;
+
+      // If model requested a tool/function
+      if (msg.function_call && msg.function_call.name) {
+        // Parse function args (they are typically a JSON string)
+        let parsedArgs = {};
+        try {
+          parsedArgs = msg.function_call.arguments
+            ? JSON.parse(msg.function_call.arguments)
+            : {};
+        } catch (e) {
+          parsedArgs = {};
+        }
+
+        // Execute the tool
+        const toolResult = await executeTool(msg.function_call.name, parsedArgs, userId, userName);
+
+        // Append the assistant function_call message (as returned by model) and the function result
+        // OpenAI rejects messages with content: null, so provide a textual representation
+        const parsedArgsText = Object.keys(parsedArgs).length ? JSON.stringify(parsedArgs) : '';
+        messages.push({
+          role: 'assistant',
+          content: `Function call: ${msg.function_call.name}${parsedArgsText ? `\nArguments: ${parsedArgsText}` : ''}`
+        });
+        messages.push({
+          role: 'function',
+          name: msg.function_call.name,
+          content: JSON.stringify(toolResult)
+        });
+
+        // Continue loop to let model incorporate function result and produce final answer
+        continue;
+      }
+
+      // No function call -> normal assistant response
+      finalResponse = msg.content || (msg.message && msg.message.content) || '';
+      break;
     }
-    if (!finalResponse && result && result.response) {
-      const resp = result.response;
-      if (resp && typeof resp.text === 'function') finalResponse = resp.text();
-      else if (resp && typeof resp.text === 'string') finalResponse = resp.text;
-    }
-    
+
+    // Fallback if still empty
+    if (!finalResponse) finalResponse = "Sorry, I couldn't generate a response. Please try again.";
+
     // Save the dialogue
     await dialoguesModel.saveDialogue(userId, userName, userMessage, finalResponse);
-    
+
     return finalResponse;
-    
   } catch (error) {
-    console.error('Error processing message with Gemini:', error);
-    
-    if (error.message && error.message.includes('API key')) {
-      throw new Error('Invalid Gemini API key. Please check your GEMINI_API_KEY in .env file.');
+    console.error('Error processing message with OpenAI:', error);
+
+    if (error.message && error.message.toLowerCase().includes('api key')) {
+      throw new Error('Invalid OpenAI API key. Please check your OPENAI_API_KEY in .env file.');
     }
-    
+
     throw error;
   }
 }
