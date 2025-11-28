@@ -83,6 +83,31 @@ class TodosModel {
     }
   }
 
+  async markMultipleAsCompleted(todoKeys) {
+    try {
+      const updates = todoKeys.map(key => ({
+        _key: key,
+        completed: true,
+        completedAt: new Date().toISOString()
+      }));
+      
+      if (typeof this.collection.bulkUpdate === 'function') {
+        await this.collection.bulkUpdate(updates);
+      } else {
+        for (const update of updates) {
+          await this.collection.update(update._key,{
+            completed: update.completed,
+            completedAt: update.completedAt
+          });
+        }
+      }
+      return true;
+    } catch (error) {
+      console.error('error while marking multiple todos as completed: ', error);
+      throw error;
+    }
+  }
+
   async updateTodo(todoKey, updates) {
     try {
       const result = await this.collection.update(todoKey, updates);

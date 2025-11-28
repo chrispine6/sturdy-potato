@@ -52,6 +52,21 @@ const functions = {
       required: ["todo_index"]
     }
   },
+  complete_multiple_todos: {
+    name: "complete_multiple_todos",
+    description: "Marks multiple todos as completed. Use this when the user indicates they've finished several tasks at once.",
+    parameters: {
+      type: "object",
+      properties: {
+        todo_indices: {
+          type: "array",
+          items: { type: "number" },
+          description: "An array of indices/numbers of the todos to complete (1-based)"
+        }
+      },
+      required: ["todo_indices"]
+    }
+  },
   create_reminder: {
     name: "create_reminder",
     description: "Creates a reminder for the user at a specific time in the future. Use this when the user wants to be reminded about something.",
@@ -224,7 +239,27 @@ async function executeTool(functionName, functionArgs, userId, userName) {
           message: `Completed: ${todo.todoText}`,
           task: todo.todoText
         };
-      
+     
+      case "complete_multiple_todos":
+        const allTodosMulti = await todosModel.getUserTodos(userId, false);
+        const indices = functionArgs.todo_indices || [];
+        const validIndices = indices.filter(i => i >= 1 && i <= allTodosMulti.length);
+        const todoKeys = validIndices.map(i => allTodosMulti[i - 1]._key);
+        if todoKeys.length === 0 {
+          return { 
+            success: false, 
+            message: `No valid todo numbers provided. You have ${allTodosMulti.length} active todos.` 
+          };
+        }
+        await todosModel.markMultipleAsCompleted(todoKeys);
+        const completedTasks = validIndices.map(i => allTodosMulti[i - 1].todoText);
+
+        return { 
+          success: true, 
+          message: `Completed tasks: ${completedTasks.join(', ')}`,
+          completedTasks,
+        };
+        
       case "create_reminder":
         let milliseconds;
         const { time_value, time_unit, message } = functionArgs;
